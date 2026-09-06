@@ -47,6 +47,7 @@ module.exports = async (inputData = null) => {
     return new Promise(async () => {
       try {
         const { NativeBridgeModule } = NativeModules;
+        NativeBridgeModule.clearInactiveServiceNotification();
         const textEncoder = new TextEncoder();
         const textDecoder = new TextDecoder();
 
@@ -1657,6 +1658,7 @@ module.exports = async (inputData = null) => {
             // check if ping initiated
             if (latest.echo === 'ping') {
               await setDataInAsyncStorage('echo', 'pong');
+              NativeBridgeModule.clearInactiveServiceNotification();
             }
 
             // check if user wants to download files

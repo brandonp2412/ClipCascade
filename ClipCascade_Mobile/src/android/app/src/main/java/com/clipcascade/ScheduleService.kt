@@ -72,7 +72,7 @@ class ScheduleService(context: Context, workerParams: WorkerParameters) : Corout
     suspend fun foregroundServiceIsActive(bridgeData: AsyncStorageBridge) : Boolean {
         // check if foreground service is running
         bridgeData.setValue("echo", "ping")
-        repeat(35) { // 3500 ms
+        repeat(100) { // 10 seconds: tolerate transient JS stalls during reconnect
             delay(100) // Wait for 100 ms
             if (bridgeData.getValue("echo") == "pong") {
                 return true

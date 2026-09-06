@@ -66,6 +66,11 @@ class NativeBridgeModule(reactContext: ReactApplicationContext) : ReactContextBa
     }
 
     @ReactMethod
+    fun clearInactiveServiceNotification() {
+        ScheduleService.removeNotificationIfPresent(reactApplicationContext)
+    }
+
+    @ReactMethod
     fun getFileSize(contentUri: String, promise: Promise) {
         try {
             val trimmedUri = contentUri.trim()
