@@ -24,7 +24,6 @@ import { pbkdf2 } from '@react-native-module/pbkdf2';
 import { Buffer } from 'buffer';
 import { pickDirectory, isCancel } from '@react-native-documents/picker';
 import { sha3_512 } from 'js-sha3';
-import { DOMParser } from 'react-native-html-parser';
 
 import {
   setDataInAsyncStorage,
@@ -39,7 +38,6 @@ import StartForegroundService from './StartForegroundService';
  *
  * (file) android\app\src\main\java\com\clipcascade\AsyncStorageBridge.kt
  * (file) android\app\src\main\java\com\clipcascade\BootReceiver.kt
- * (file) android\app\src\main\java\com\clipcascade\ClipboardFloatingActivity.kt
  * (file) android\app\src\main\java\com\clipcascade\ClipboardListenerModule.kt
  * (file) android\app\src\main\java\com\clipcascade\ClipboardListenerPackage.kt
  * (file) android\app\src\main\java\com\clipcascade\HeadlessTaskService.kt
@@ -111,6 +109,7 @@ export default function App() {
     cipher_enabled: 'true',
     server_url: 'http://localhost:8080',
     websocket_url: '',
+    session_cookie: '',
     username: '',
     hashed_password: '',
     csrf_token: '',
@@ -265,9 +264,25 @@ export default function App() {
           if (validResult[0]) {
             //enable websocket page
             setEnableWSPage(true);
-            setDataInAsyncStorage('wsIsRunning', 'false');
+            const relaunchOnBoot = await getDataFromAsyncStorage(
+              'relaunch_on_boot',
+            );
+            if (relaunchOnBoot === 'true') {
+              // The previous process may have died even though the user wants
+              // persistent sync. Restore the foreground service automatically.
+              await setDataInAsyncStorage('wsIsRunning', 'true');
+              await setDataInAsyncStorage(
+                'wsForegroundServiceTerminated',
+                'false',
+              );
+              setWsIsRunning('true');
+              await onDisplayNotification();
+            } else {
+              await setDataInAsyncStorage('wsIsRunning', 'false');
+            }
             // start foreground service (work manager notification click handler)
             if (
+              relaunchOnBoot !== 'true' &&
               foregroundServiceStoppedRunning &&
               foregroundServiceStoppedRunning === 'true'
             ) {
@@ -280,12 +295,9 @@ export default function App() {
             setDataInAsyncStorage('wsIsRunning', 'false');
             if (data_s.save_password === 'true') {
               const pass = await getDataFromAsyncStorage('password');
-              if (
-                pass !== null &&
-                pass !== '' &&
-                data_s.cipher_enabled !== 'true'
-              ) {
-                setPassword(pass);
+              if (pass !== null && pass !== '') {
+                // `pass` is already the SHA3-512 authentication value, not the raw
+                // password. Reuse the persisted E2EE key when encryption is enabled.
                 handleLogin(pass, data_s);
               }
             }
@@ -428,7 +440,7 @@ export default function App() {
   };
 
   // Login
-  const login = async (data_s, password_s) => {
+  const login = async (data_s, password_s, rawPasswordForCipher = null) => {
     try {
       // 1. Fetch the login page to get CSRF token and initial cookie
       const loginPageResponse = await fetchTimeout(
@@ -443,61 +455,58 @@ export default function App() {
         return [false, msg, data_s];
       }
 
-      // parse HTML to get _csrf using react-native-html-parser
+      // Extract the CSRF field directly. The lightweight HTML parser previously
+      // used here can return an undefined document on newer React Native builds.
       const htmlText = await loginPageResponse.text();
-
-      // Create a new DOM Parser instance
-      const parser = new DOMParser();
-      // Parse HTML
-      const doc = parser.parseFromString(htmlText, 'text/html');
-
-      // Find <input> elements and look for name="_csrf"
-      const inputElements = doc.getElementsByTagName('input');
-      let csrfToken = '';
-
-      for (let i = 0; i < inputElements.length; i++) {
-        const nameAttr = inputElements[i].getAttribute('name');
-        if (nameAttr === '_csrf') {
-          csrfToken = inputElements[i].getAttribute('value');
-          break;
-        }
-      }
+      const csrfMatch = htmlText.match(
+        /name=["']_csrf["'][^>]*value=["']([^"']+)["']/i,
+      );
+      const csrfToken = csrfMatch?.[1] ?? '';
 
       if (csrfToken === '') {
         return [false, 'No CSRF token found in login page', data_s];
       }
 
-      // 2. Retrieve the cookie(s) from the "Set-Cookie" header
-      const setCookieHeader = loginPageResponse.headers.get('set-cookie');
-      if (!setCookieHeader) {
-        return [false, 'No Set-Cookie header returned from login page', null];
-      }
+      // React Native's networking stack owns the cookie jar. `Set-Cookie` is not
+      // exposed as a readable response header on Android, but the session cookie
+      // from the GET is retained automatically and sent with the POST below.
 
-      // 3. Prepare form data with the credentials AND the CSRF token
+      // 2. Prepare form data with the credentials AND the CSRF token
       const formData = new URLSearchParams();
       formData.append('username', data_s.username);
       formData.append('password', password_s);
       formData.append('_csrf', csrfToken);
 
-      // 4. Send a POST request to the login URL with cookies + form data
+      // 3. Send the POST using the same native cookie jar as the initial GET.
       const loginResponse = await fetchTimeout(data_s.server_url + LOGIN_URL, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',
-          Cookie: setCookieHeader, // Include the cookies from the initial GET
         },
         body: formData.toString(),
       });
 
-      const loginResponseText = await loginResponse.text();
+      // A server mounted under a context path can legitimately redirect a
+      // successful form login to `/`, which may be a 404 at the reverse proxy.
+      // The authenticated session is authoritative, not the final redirect code.
+      await loginResponse.text();
+      const sessionValidation = await validateSession(data_s);
 
-      // 5. Check for login success
-      if (
-        loginResponse.ok &&
-        !loginResponseText.toLowerCase().includes('bad credentials')
-      ) {
+      // 4. Check for login success
+      if (sessionValidation[0]) {
         // get CSRF token
         data_s.csrf_token = await getCSRFToken(data_s);
+
+        data_s.session_cookie = await NativeBridgeModule.getCookies(
+          data_s.server_url,
+        );
+        if (!data_s.session_cookie) {
+          return [
+            false,
+            'Login succeeded, but the session cookie could not be read',
+            data_s,
+          ];
+        }
 
         // get server mode
         const serverModeResponse = await fetchTimeout(
@@ -571,18 +580,28 @@ export default function App() {
           );
         }
 
-        // Hash the password for encryption
+        // Derive the E2EE key only when the user supplied the raw password. On
+        // automatic re-login we only retain the authentication hash, so reuse the
+        // previously persisted derived key instead of deriving a different key.
         if (data_s.cipher_enabled === 'true') {
-          hashResult = await hash(data_s, password);
-          data_s = hashResult[2];
-          if (!hashResult[0]) {
+          if (rawPasswordForCipher !== null) {
+            hashResult = await hash(data_s, rawPasswordForCipher);
+            data_s = hashResult[2];
+            if (!hashResult[0]) {
+              return [
+                false,
+                'Login successful but error generating hash: ' + hashResult[1],
+                data_s,
+              ];
+            }
+            data_s.hashed_password = hashResult[1].toString('base64');
+          } else if (!data_s.hashed_password) {
             return [
               false,
-              'Login successful but error generating hash: ' + hashResult[1],
+              'Login succeeded, but the encryption key is missing. Re-enter the password once.',
               data_s,
             ];
           }
-          data_s.hashed_password = hashResult[1].toString('base64');
         }
 
         return [true, 'Login successful: ' + loginResponse.status, data_s];
@@ -802,7 +821,11 @@ export default function App() {
       let loginResult;
       do {
         iteration++;
-        loginResult = await login(data_s, password_s);
+        loginResult = await login(
+          data_s,
+          password_s,
+          pass === null ? password : null,
+        );
       } while (!loginResult[0] && iteration < MAX_LOGIN_AUTO_RETRY);
 
       data_s = loginResult[2];
@@ -827,6 +850,19 @@ export default function App() {
 
         // Save data in async storage
         await setAsyncStorage(data_s);
+
+        // Automatic saved-password login is used to recover an expired server
+        // session. If persistent sync is enabled, restore the foreground service
+        // as part of that recovery instead of leaving wsIsRunning disabled.
+        if (
+          pass !== null &&
+          (await getDataFromAsyncStorage('relaunch_on_boot')) === 'true'
+        ) {
+          await setDataInAsyncStorage('wsIsRunning', 'true');
+          await setDataInAsyncStorage('wsForegroundServiceTerminated', 'false');
+          setWsIsRunning('true');
+          await onDisplayNotification();
+        }
 
         // Save data_s in data state hook
         setData(data_s);
@@ -1038,10 +1074,7 @@ export default function App() {
                 />
               </View>
               <View style={styles.row}>
-                <Text style={styles.label}>
-                  Run on system startup (disable if the READ_LOGS permission is
-                  granted):
-                </Text>
+                <Text style={styles.label}>Run on system startup:</Text>
                 <CheckBox
                   value={data.relaunch_on_boot === 'true' ? true : false}
                   onValueChange={newValue =>
@@ -1204,33 +1237,13 @@ export default function App() {
                     { fontWeight: 'bold', marginBottom: 5 },
                   ]}
                 >
-                  Clipboard Sharing on Android 10+:
+                  Automatic Clipboard Monitoring:
                 </Text>
                 <Text style={styles.label}>
-                  On Android 10 and above, clipboard monitoring has been
-                  restricted for privacy reasons. To share clipboard content
-                  using ClipCascade:
-                </Text>
-                <View style={{ marginTop: 10, marginLeft: 15 }}>
-                  <Text style={styles.label}>
-                    1. Select the text, image, or file(s) you want to copy.
-                  </Text>
-                  <Text style={styles.label}>
-                    2. Tap 'Share', select 'ClipCascade'.
-                  </Text>
-                  <Text style={[styles.label, { marginLeft: 15 }]}>(or)</Text>
-                  <Text style={[styles.label, { marginLeft: 15 }]}>
-                    Tap 'ClipCascade' instead of 'Copy'.
-                  </Text>
-                </View>
-                <Text
-                  style={[
-                    styles.label,
-                    { marginTop: 5, fontSize: 15, fontStyle: 'italic' },
-                  ]}
-                >
-                  There's also a workaround to enable clipboard sharing in the
-                  background. Scroll down for setup instructions.
+                  On Android 10 and above, ClipCascade uses Shizuku for automatic
+                  background clipboard monitoring. Start Shizuku and grant
+                  ClipCascade access when prompted. No READ_LOGS or "Draw over
+                  other apps" permission is required.
                 </Text>
               </View>
 
@@ -1284,62 +1297,6 @@ export default function App() {
                 </Text>
               </TouchableOpacity>
 
-              {/* ADB Commands Section */}
-              <View style={{ marginTop: 20 }}>
-                <Text
-                  style={[
-                    styles.label,
-                    { fontWeight: 'bold', marginBottom: 5 },
-                  ]}
-                >
-                  Automatic Clipboard Monitoring Setup:
-                </Text>
-                <Text style={styles.label}>
-                  On rooted/non-rooted devices, to enable automatic clipboard
-                  monitoring you need to execute these 3 ADB commands:
-                </Text>
-                <View style={{ marginTop: 10, marginLeft: 15 }}>
-                  <Text style={styles.label}>
-                    1. Enable the READ_LOGS permission:
-                  </Text>
-                  <Text
-                    selectable
-                    style={[
-                      styles.label,
-                      { fontWeight: 'bold', marginLeft: 15 },
-                    ]}
-                  >
-                    {`> adb -d shell pm grant com.clipcascade android.permission.READ_LOGS`}
-                  </Text>
-
-                  <Text style={styles.label}>
-                    2. Allow "Drawing over other apps", also accessible from
-                    Settings:
-                  </Text>
-                  <Text
-                    selectable
-                    style={[
-                      styles.label,
-                      { fontWeight: 'bold', marginLeft: 15 },
-                    ]}
-                  >
-                    {`> adb -d shell appops set com.clipcascade SYSTEM_ALERT_WINDOW allow`}
-                  </Text>
-
-                  <Text style={styles.label}>
-                    3. Kill the app for the new permissions to take effect:
-                  </Text>
-                  <Text
-                    selectable
-                    style={[
-                      styles.label,
-                      { fontWeight: 'bold', marginLeft: 15 },
-                    ]}
-                  >
-                    {`> adb -d shell am force-stop com.clipcascade`}
-                  </Text>
-                </View>
-              </View>
             </View>
           </View>
           {/* Footer */}

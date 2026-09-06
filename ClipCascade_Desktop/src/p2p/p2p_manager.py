@@ -5,7 +5,7 @@ import websocket
 import asyncio
 import uuid
 
-from threading import Lock, Thread
+from threading import Lock, Thread, current_thread
 from typing import Dict, List, Optional
 from core.config import Config
 from interfaces.ws_interface import WSInterface
@@ -30,7 +30,7 @@ else:
     from gui.tray import TaskbarPanel
 
 class P2PManager(WSInterface):
-    def __init__(self, config: Config, is_login_phase=True):
+    def __init__(self, config: Config, is_login_phase=True, auto_reconnect=True):
         self.config = config
         self.clipboard_manager = ClipboardManager(self.config)
         self.cipher_manager = CipherManager(self.config)
@@ -42,6 +42,7 @@ class P2PManager(WSInterface):
         self.is_connected = False
         self.disconnected = False
         self.is_auto_reconnecting = False
+        self.auto_reconnect = auto_reconnect
         self._suppress_auto_reconnect_once = False
         self.is_clipboard_monitoring_on = False
 
@@ -212,8 +213,9 @@ class P2PManager(WSInterface):
         if self._suppress_auto_reconnect_once:
             self._suppress_auto_reconnect_once = False
             return
-        # Auto Reconnect
-        if not self.is_login_phase and not self.disconnected:
+        # Auto Reconnect. Headless/service integrations can disable this and own
+        # authentication + lifecycle recovery themselves.
+        if self.auto_reconnect and not self.is_login_phase and not self.disconnected:
             self.is_auto_reconnecting = True
             if self.first_conn_lost:
                 self.notification_manager.notify(
@@ -242,6 +244,7 @@ class P2PManager(WSInterface):
             msg_type = data.get("type")
 
             if msg_type == "ASSIGNED_ID":
+                logging.info("P2P signaling assigned peer id %s", data["peerId"])
                 if self.my_peer_id is not None and self.my_peer_id != data["peerId"]:
                     await self._cleanup_peer_connections()
                 self.my_peer_id = data["peerId"]
@@ -250,6 +253,7 @@ class P2PManager(WSInterface):
                     self._pending_peer_list = None
                     await self._handle_peer_list(pending)
             elif msg_type == "PEER_LIST":
+                logging.info("P2P signaling peer list: %s", data["peers"])
                 await self._handle_peer_list(data["peers"])
             elif msg_type == "OFFER":
                 await self._handle_offer(data["fromPeerId"], data["offer"])
@@ -325,6 +329,20 @@ class P2PManager(WSInterface):
 
     def disconnect(self):
         self.schedule_task(self._disconnect())
+
+    def shutdown(self, timeout: float = 15.0):
+        """Synchronously tear down P2P state and stop this manager's event loop."""
+        try:
+            if self.loop.is_running():
+                future = self.schedule_task(self._disconnect())
+                future.result(timeout=timeout)
+        except Exception as e:
+            logging.warning("P2P shutdown cleanup failed: %s", e)
+        finally:
+            if self.loop.is_running():
+                self.loop.call_soon_threadsafe(self.loop.stop)
+            if self.loop_thread.is_alive() and current_thread() is not self.loop_thread:
+                self.loop_thread.join(timeout=2.0)
 
     async def _disconnect(self):
         """
@@ -689,6 +707,7 @@ class P2PManager(WSInterface):
         @channel.on("open")
         def on_open():
             self._sync_live_connections_count()
+            logging.info("P2P data channel open to peer %s", remote_peer_id)
 
         if channel.readyState == "open":
             self._sync_live_connections_count()
@@ -700,6 +719,7 @@ class P2PManager(WSInterface):
         @channel.on("close")
         def on_close():
             self._sync_live_connections_count()
+            logging.info("P2P data channel closed to peer %s", remote_peer_id)
             self.schedule_task(self._recover_peer_transport(remote_peer_id, None))
 
         @channel.on("error")
