@@ -121,9 +121,9 @@ module.exports = async (inputData = null) => {
               return false;
             }
 
-            await NativeBridgeModule.clearCookies();
             const loginPageResponse = await fetch(server_url + '/login', {
               method: 'GET',
+              credentials: 'include',
             });
             if (!loginPageResponse.ok) {
               return false;
@@ -146,6 +146,7 @@ module.exports = async (inputData = null) => {
               encodeURIComponent(csrfToken);
             await fetch(server_url + '/login', {
               method: 'POST',
+              credentials: 'include',
               headers: {
                 'Content-Type': 'application/x-www-form-urlencoded',
               },
@@ -154,7 +155,7 @@ module.exports = async (inputData = null) => {
 
             const validateResponse = await fetch(
               server_url + '/validate-session',
-              { method: 'GET' },
+              { method: 'GET', credentials: 'include' },
             );
             if (
               !validateResponse.ok ||
