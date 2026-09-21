@@ -259,7 +259,7 @@ export default function App() {
           await setDataInAsyncStorage('p2pStatusMessage', '');
           //validate session
           setLoadingPageMessage('Verifying Session...');
-          validResult = await validateSession(data_s);
+          const validResult = await validateSession(data_s);
           setEnableLoadingPage(false);
           if (validResult[0]) {
             //enable websocket page
@@ -585,7 +585,7 @@ export default function App() {
         // previously persisted derived key instead of deriving a different key.
         if (data_s.cipher_enabled === 'true') {
           if (rawPasswordForCipher !== null) {
-            hashResult = await hash(data_s, rawPasswordForCipher);
+            const hashResult = await hash(data_s, rawPasswordForCipher);
             data_s = hashResult[2];
             if (!hashResult[0]) {
               return [
@@ -725,7 +725,7 @@ export default function App() {
         setWsPageMessage('');
         setWsPageP2PMessage('');
         await clearFiles();
-        wsIsRunning_s = wsIsRunning === 'true' ? 'false' : 'true'; // toggle
+        const wsIsRunning_s = wsIsRunning === 'true' ? 'false' : 'true'; // toggle
         await setDataInAsyncStorage('wsForegroundServiceTerminated', 'false');
         await setDataInAsyncStorage('wsIsRunning', wsIsRunning_s);
         if (wsIsRunning_s === 'true') {
