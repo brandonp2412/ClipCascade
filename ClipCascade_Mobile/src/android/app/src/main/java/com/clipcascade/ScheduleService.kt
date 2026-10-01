@@ -50,6 +50,7 @@ class ScheduleService(context: Context, workerParams: WorkerParameters) : Corout
                 val bridgeData = AsyncStorageBridge(applicationContext)
                 if(enableForegroundService(bridgeData)) {
                     if(!foregroundServiceIsActive(bridgeData)) {
+                        RecoveryService.requestRecovery(applicationContext)
                         showNotificationIfNotPresent()
                     } else {
                         removeNotificationIfPresent(applicationContext)

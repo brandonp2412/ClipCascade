@@ -76,6 +76,10 @@
       <service
         android:name=".HeadlessTaskService"
         android:exported="false" />
+      <service
+        android:name=".RecoveryService"
+        android:exported="false"
+        android:stopWithTask="false" />
 
       <provider
         android:name="rikka.shizuku.ShizukuProvider"

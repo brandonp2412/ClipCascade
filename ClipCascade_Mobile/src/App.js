@@ -168,6 +168,9 @@ export default function App() {
   // notification
   const onDisplayNotification = async () => {
     try {
+      // Arm recovery before Notifee so process death cannot leave monitoring down.
+      NativeBridgeModule.armServiceRecovery();
+
       // remove work manager notification if exists
       await notifee.cancelAllNotifications();
 
@@ -642,6 +645,7 @@ export default function App() {
       if (wsIsRunning === 'true') {
         await setDataInAsyncStorage('wsIsRunning', 'false');
         setWsIsRunning('false');
+        NativeBridgeModule.disarmServiceRecovery();
       }
 
       const formData = new URLSearchParams();
@@ -746,6 +750,7 @@ export default function App() {
             await new Promise(resolve => setTimeout(resolve, 100)); //100 ms
           }
           await notifee.cancelAllNotifications();
+          NativeBridgeModule.disarmServiceRecovery();
           setWsPageMessage('');
           setWsPageP2PMessage('');
         }

@@ -3,6 +3,7 @@ import {
   getDataFromAsyncStorage,
   clearAsyncStorage,
 } from './AsyncStorageManagement'; // persistent storage
+import {NativeModules} from 'react-native';
 import StartForegroundService from './StartForegroundService'; // foreground service
 
 module.exports = async data => {
@@ -18,6 +19,17 @@ module.exports = async data => {
         await setDataInAsyncStorage('wsIsRunning', 'true');
         await setDataInAsyncStorage('wsForegroundServiceTerminated', 'false');
         await setDataInAsyncStorage('wsStatusMessage', '');
+        NativeModules.NativeBridgeModule.armServiceRecovery();
+        const result = await StartForegroundService();
+        if (result[0] === false) {
+          throw result[1];
+        }
+      }
+    } else if (data && data['event'] === 'SERVICE_RECOVERY') {
+      if ((await getDataFromAsyncStorage('wsIsRunning')) === 'true') {
+        await setDataInAsyncStorage('wsForegroundServiceTerminated', 'false');
+        await setDataInAsyncStorage('wsStatusMessage', '');
+        NativeModules.NativeBridgeModule.armServiceRecovery();
         const result = await StartForegroundService();
         if (result[0] === false) {
           throw result[1];

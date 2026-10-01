@@ -71,6 +71,16 @@ class NativeBridgeModule(reactContext: ReactApplicationContext) : ReactContextBa
     }
 
     @ReactMethod
+    fun armServiceRecovery() {
+        RecoveryService.arm(reactApplicationContext)
+    }
+
+    @ReactMethod
+    fun disarmServiceRecovery() {
+        RecoveryService.disarm(reactApplicationContext)
+    }
+
+    @ReactMethod
     fun getFileSize(contentUri: String, promise: Promise) {
         try {
             val trimmedUri = contentUri.trim()
