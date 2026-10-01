@@ -358,6 +358,8 @@ export default function App() {
       };
       clearWSStatusMessage();
     };
+    // Startup intentionally runs once and captures the initial helper implementations.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Function to convert a server URL to a WebSocket URL
